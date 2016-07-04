@@ -4,8 +4,37 @@ import re
 from collections import OrderedDict
 
 
-def read_one_stan_csv(csvfile):
-    '''Return a numpy array of arrays, and a dict with attributes'''
+def read_one_stan_csv(csvfile, summary=False):
+    """Read one Stan file produced by CmdStan.
+
+    Read the output from a Variational fit that only produces one
+    csv file
+    
+    Parameters
+    ----------
+    csvfile : str
+        csvfile produced by CmdStan.
+
+    summary : boolean
+        Include the first line of values, which is the mean of the 
+        variational approximation. 
+    
+    Returns
+    -------
+    Extract : OrderedDict
+        OrderedDict containing the samples. Ordering follows the header.
+
+    Attributes : dictionary of attributes extracted from the comment section
+    
+    Raises
+    ------
+    ValueError
+        Input is empty
+    OSError
+        File does not exist, or cannot be read.
+    KeyError
+        Something is wrong with the comment section
+    """
     if len(csvfile) < 1:
         raise ValueError("Input is empty!")
     if not os.path.exists(csvfile):
@@ -35,11 +64,12 @@ def read_one_stan_csv(csvfile):
                 try:
                     niter = int(attributes['output_samples'])
                 except KeyError:
-                    print "output_samples not found in attributes!"
-                    raise
+                    raise KeyError("output_samples not found in attributes!")
+                    
 
                 # Initialize array
-                draws = np.empty((niter+1, len(header))) # +1 for the first iteration which summarises
+                # +1 for the first iteration which summarises
+                draws = np.empty((niter+1, len(header))) 
 
                 # No more comments
                 comment_line = False
@@ -52,11 +82,17 @@ def read_one_stan_csv(csvfile):
                 attributes[key.strip()] = val.strip()
             elif not comment_line:
                 # Draws.
-                draws[n_current_iter] = line.strip().split(',')
+                draws[n_current_iter, :] = line.strip().split(',')
                 n_current_iter += 1
         header = np.array(header)
-        return (draws, header, attributes)
-    # Test..
+
+    Extract = OrderedDict()
+    for idx, i in enumerate(header):
+        Extract[i] = draws[:, idx]
+
+
+
+    return (Extract, attributes)
 
 
 
@@ -82,8 +118,6 @@ def read_stan_csv(csvfiles):
     ------
     ValueError
         If a list is not provided
-    
-    
     """
     if not type(csvfiles) == list:
         raise ValueError("Input must be a list!")
