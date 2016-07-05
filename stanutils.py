@@ -3,6 +3,67 @@ import numpy as np
 import re
 from collections import OrderedDict
 
+def compute_hdi(array, interval=[2.5, 50, 97.5]):
+    '''Return the high-density interval
+
+    Parameters
+    ----------
+    array : numpy array
+        Array containing the sampled values
+
+    interval : list 
+        Interval range for HDI
+
+    Returns
+    -------
+    hdi : array
+        Array of size equivalent to interval with specified percentiles
+    '''    
+    hdi = numpy.percentile(array, interval)
+
+def softmax(matrix):
+    '''Calculates the row-wise softmax
+
+    Calculate the row-wise softmax for a matrix of size NxM,
+        matrix[N,:] = exp(matrix[N,:]) / (sum(matrix[N,:]), axis=1)
+
+    Parameters
+    ----------
+    array : array
+        Array of inputs
+
+    Returns
+    -------
+    softmax_array : array
+        Array with the softmax function applied row-wise
+    
+    Taken from a SO anwer: http://tinyurl.com/angxm5
+    '''
+    e = np.exp(w)
+    softmax_array = e / np.sum(e, axis=1)[:, np.newaxis]
+    return softmax_array
+
+
+def f7(seq):
+    '''Return the unique entries in list in same order
+
+    Parameters
+    ----------
+    seq : list
+        list of inputs
+
+    Returns
+    -------
+    seen_uniq : list
+        List containing only the unique entries in the same order as the
+        original list
+    
+    Taken from a SO anwer: http://tinyurl.com/angxm5
+    '''
+    seen = set()
+    seen_add = seen.add
+    seen_uniq = [x for x in seq if not (x in seen or seen_add(x))]
+    return seen_uniq
 
 def read_one_stan_csv(csvfile, summary=False):
     """Read one Stan file produced by CmdStan.
@@ -65,7 +126,6 @@ def read_one_stan_csv(csvfile, summary=False):
                     niter = int(attributes['output_samples'])
                 except KeyError:
                     raise KeyError("output_samples not found in attributes!")
-                    
 
                 # Initialize array
                 # +1 for the first iteration which summarises
@@ -86,14 +146,22 @@ def read_one_stan_csv(csvfile, summary=False):
                 n_current_iter += 1
         header = np.array(header)
 
+    name_without_index = f7([x.split('.')[0] for x in header])
+
     Extract = OrderedDict()
+    for i in name_without_index:
+        # TODO: fix this tomorrow
+        re_search = re.compile(i+'(.+)?$')
+        # Assume that names are not too close...
+        match_idx = [m.group(0) for l in header for m in [re_search.search(l)] if m]
+
+
+
+
     for idx, i in enumerate(header):
         Extract[i] = draws[:, idx]
 
-
-
     return (Extract, attributes)
-
 
 
 def read_stan_csv(csvfiles):
