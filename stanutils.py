@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import re
-from collections import OrderedDict
+from collections import defaultdict, OrderedDict
 
 def compute_hdi(array, interval=[2.5, 50, 97.5]):
     '''Return the high-density interval
@@ -19,7 +19,9 @@ def compute_hdi(array, interval=[2.5, 50, 97.5]):
     hdi : array
         Array of size equivalent to interval with specified percentiles
     '''    
-    hdi = numpy.percentile(array, interval)
+    hdi = np.percentile(array, interval)
+    return hdi
+
 
 def softmax(matrix):
     '''Calculates the row-wise softmax
@@ -64,6 +66,34 @@ def f7(seq):
     seen_add = seen.add
     seen_uniq = [x for x in seq if not (x in seen or seen_add(x))]
     return seen_uniq
+
+
+def prepare_dict(header, nsamples):
+    name_without_index = f7([x.split('.')[0] for x in header])
+
+    # Prepare dict
+    Extract = OrderedDict()
+    header_name_to_merged = defaultdict(list) # Name, [dimension]
+    for i in name_without_index:
+        re_search = re.compile(i+'(\..+)?$')
+        # Assume that names are not too close...
+        match_idx = [m.group(0) for l in header for m in [re_search.search(l)] if m]
+
+        # Assume last entry represents size and dimensions
+        e = match_idx[-1]
+        re_dim = [int(x) for x in re.findall('\.(\d+)', e)]
+        re_dim.append(nsamples)
+        Extract[i] = np.zeros((re_dim))
+
+        # Map it
+        for j in match_idx:
+            re_dim = [int(x)-1 for x in re.findall('\.(\d+)', j)]
+            header_name_to_merged[j] = [i, re_dim]
+
+    return (Extract, header_name_to_merged)
+
+
+
 
 def read_one_stan_csv(csvfile, summary=False):
     """Read one Stan file produced by CmdStan.
@@ -114,7 +144,7 @@ def read_one_stan_csv(csvfile, summary=False):
     n_current_iter = 0
 
     # Read comments
-
+    summary_flag = True
     with open(csvfile, 'r') as fh:
         for line in fh:
             if not line.startswith('#') and comment_line:
@@ -129,7 +159,10 @@ def read_one_stan_csv(csvfile, summary=False):
 
                 # Initialize array
                 # +1 for the first iteration which summarises
-                draws = np.empty((niter+1, len(header))) 
+                if summary:
+                    draws = np.empty((niter+1, len(header)))
+                else:
+                    draws = np.empty((niter, len(header)))
 
                 # No more comments
                 comment_line = False
@@ -141,30 +174,39 @@ def read_one_stan_csv(csvfile, summary=False):
                 key, val = line.strip().split('=')
                 attributes[key.strip()] = val.strip()
             elif not comment_line:
+                if not summary and summary_flag:
+                    summary_flag = False
+                    continue
+
                 # Draws.
                 draws[n_current_iter, :] = line.strip().split(',')
                 n_current_iter += 1
         header = np.array(header)
 
-    name_without_index = f7([x.split('.')[0] for x in header])
-
-    Extract = OrderedDict()
-    for i in name_without_index:
-        # TODO: fix this tomorrow
-        re_search = re.compile(i+'(.+)?$')
-        # Assume that names are not too close...
-        match_idx = [m.group(0) for l in header for m in [re_search.search(l)] if m]
-
-
-
-
+    
+    # Translate to OrderedDict
+    Extract, header_map = prepare_dict(header, niter)
     for idx, i in enumerate(header):
-        Extract[i] = draws[:, idx]
+        l = header_map[i]
+        arr = Extract[l[0]]
+        ix = l[1]
+        draw_values = draws[:, idx]
+        
+
+        # This is a bit stupid. Currently only works with stan-objects of dim<2
+        if len(ix) == 2:
+            arr[ix[0]][ix[1]] = draw_values
+        elif len(ix) == 1:
+            arr[ix[0]] = draw_values
+        elif len(ix) == 0:
+            arr = draw_values
+        else:
+            raise ValueError("Not implemented for arrays with dim>2")
 
     return (Extract, attributes)
 
 
-def read_stan_csv(csvfiles):
+def read_stan_csv(csvfiles, warmup=False):
     """Read Stan files produced by CmdStan.
 
     Reads the files specified in csvfiles and reports back an OrderedDict.
@@ -174,6 +216,9 @@ def read_stan_csv(csvfiles):
     ----------
     csvfiles : list
         List of csvfiles produced by CmdStan. One for each chain.
+
+    warmup : boolean
+        Return warmup samples as the first Nwarmup in arrays
     
     Returns
     -------
@@ -207,17 +252,27 @@ def read_stan_csv(csvfiles):
                 key, val = line.strip().split('=')
                 attributes[key.strip()] = val.strip()
 
-    # Initialize array to hold values
-    niter = int(attributes['num_samples']) + int(attributes['num_warmup'])
+    # Read samples
+    nsamples = int(attributes['num_samples'])
+    nwarmup = int(attributes['num_warmup'])
+    niter =  nsamples
+    if warmup:
+        niter += nwarmup
     draws = np.empty((niter*nchains, len(header))) # Iteration, Chain, Value
 
     n_current_iter = 0
     for mcmc_file in csvfiles:
+        WARMUP_STEP = True
         with open(mcmc_file, 'r') as fh:
             for line in fh:
                 # Skip comments and header
-                if line.startswith('#') or line.startswith('lp'):
+                if line.startswith('# Adaptation terminated'):
+                    # Sampling started
+                    WARMUP_STEP = False
+                elif line.startswith('#') or line.startswith('lp'):
                     continue
+                elif not warmup and WARMUP_STEP:
+                        continue
 
                 vals = line.strip().split(',')
                 if len(vals) <= 1:
@@ -226,22 +281,24 @@ def read_stan_csv(csvfiles):
                 draws[n_current_iter, :] = vals
                 n_current_iter += 1
 
-    Extract = OrderedDict()
+    # Translate to OrderedDict
+    Extract, header_map = prepare_dict(header, niter*nchains)
     for idx, i in enumerate(header):
-        Extract[i] = draws[:, idx]
+        l = header_map[i]
+        arr = Extract[l[0]]
+        ix = l[1]
+        draw_values = draws[:, idx]
+        
+
+        # This is a bit stupid. Currently only works with stan-objects of dim<2
+        if len(ix) == 2:
+            arr[ix[0]][ix[1]] = draw_values
+        elif len(ix) == 1:
+            arr[ix[0]] = draw_values
+        elif len(ix) == 0:
+            arr = draw_values
+        else:
+            raise ValueError("Not implemented for arrays with dim>2")
 
     return (Extract, attributes)
-
-
-
-
-
-
-
-
-
-
-
-
-
 
